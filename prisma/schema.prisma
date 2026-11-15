@@ -1,0 +1,41 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Entry {
+  id             String   @id @default(cuid())
+  url            String
+  label          String
+  totalPaidCents BigInt   @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  bids           Bid[]
+
+  @@index([totalPaidCents, createdAt])
+}
+
+model Bid {
+  id                    String    @id @default(cuid())
+  entryId               String
+  entry                 Entry     @relation(fields: [entryId], references: [id])
+  amountCents           Int
+  stripePaymentIntentId String?   @unique
+  status                BidStatus @default(pending)
+  createdAt             DateTime  @default(now())
+}
+
+enum BidStatus {
+  pending
+  confirmed
+}
+
+model RateLimit {
+  key         String   @id
+  count       Int
+  windowStart DateTime
+}
