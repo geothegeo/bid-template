@@ -7,31 +7,129 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-model Entry {
-  id             String   @id @default(cuid())
-  url            String
-  label          String
-  totalPaidCents BigInt   @default(0)
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
-  bids           Bid[]
-
-  @@index([totalPaidCents, createdAt])
+enum Role {
+  user
+  admin
 }
 
-model Bid {
-  id                    String    @id @default(cuid())
-  entryId               String
-  entry                 Entry     @relation(fields: [entryId], references: [id])
-  amountCents           Int
-  stripePaymentIntentId String?   @unique
-  status                BidStatus @default(pending)
-  createdAt             DateTime  @default(now())
+enum ListingType {
+  ranked
+  unranked
 }
 
-enum BidStatus {
+enum ListingStatus {
+  pending
+  active
+}
+
+enum PaymentKind {
+  new_ranked
+  upgrade
+  new_unranked
+  renew_unranked
+  unranked_to_ranked
+}
+
+enum PaymentStatus {
   pending
   confirmed
+}
+
+model User {
+  id           String    @id @default(cuid())
+  email        String    @unique
+  username     String    @unique
+  passwordHash String
+  role         Role      @default(user)
+  createdAt    DateTime  @default(now())
+  sessions     Session[]
+  listings     Listing[]
+}
+
+model Session {
+  id        String   @id // sha256 of the cookie token
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+}
+
+// Two levels max (parentId null = level 1). Suggested categories are hidden until approved.
+model Category {
+  id          String     @id @default(cuid())
+  name        String
+  slug        String     @unique
+  parentId    String?
+  parent      Category?  @relation("CategoryTree", fields: [parentId], references: [id])
+  children    Category[] @relation("CategoryTree")
+  approved    Boolean    @default(true)
+  suggestedBy String?
+  sortOrder   Int        @default(0)
+  createdAt   DateTime   @default(now())
+  listings    Listing[]
+}
+
+// Fee and bid rules per board. scopeKey is "home" or a category id.
+model BoardConfig {
+  scopeKey          String @id
+  minBidCents       Int    @default(500)
+  minIncrementCents Int    @default(500)
+  // JSON array of { months: number, cents: number }
+  unrankedPlans     Json
+}
+
+model Listing {
+  id             String        @id @default(cuid())
+  type           ListingType
+  status         ListingStatus @default(pending)
+  categoryId     String? // null = homepage board
+  category       Category?     @relation(fields: [categoryId], references: [id])
+  userId         String?
+  user           User?         @relation(fields: [userId], references: [id])
+  email          String
+  title          String
+  url            String // normalised URL or #handle
+  description    String
+  imageUrl       String?
+  totalPaidCents BigInt        @default(0) // ranked bid total (or unranked plan fee paid)
+  rankedPaidAt   DateTime? // time the current ranking amount was last confirmed (tie-break)
+  startsAt       DateTime?
+  expiresAt      DateTime?
+  noticeSentAt   DateTime?
+  createdAt      DateTime      @default(now())
+  payments       Payment[]
+  events         LedgerEvent[]
+
+  @@index([categoryId, type, status, expiresAt])
+}
+
+model Payment {
+  id               String        @id @default(cuid())
+  listingId        String
+  listing          Listing       @relation(fields: [listingId], references: [id])
+  kind             PaymentKind
+  amountCents      Int // amount charged now
+  targetTotalCents Int? // ranked total after this payment
+  months           Int? // unranked duration
+  providerId       String?       @unique
+  status           PaymentStatus @default(pending)
+  confirmedAt      DateTime?
+  createdAt        DateTime      @default(now())
+}
+
+// Append-only audit trail and activity feed.
+model LedgerEvent {
+  id          String   @id @default(cuid())
+  listingId   String
+  listing     Listing  @relation(fields: [listingId], references: [id])
+  paymentId   String   @unique
+  type        String
+  scopeKey    String
+  amountCents Int
+  position    Int? // rank after the event (ranked only)
+  createdAt   DateTime @default(now())
+
+  @@index([scopeKey, createdAt])
+  @@index([createdAt])
 }
 
 model RateLimit {

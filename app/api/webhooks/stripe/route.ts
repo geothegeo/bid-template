@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import type Stripe from "stripe";
-import { db } from "@/lib/db";
+import { confirmPayment } from "@/lib/payments";
 import { getStripe } from "@/lib/stripe";
 
 export const runtime = "nodejs";
@@ -21,33 +21,15 @@ export async function POST(request: Request) {
     return NextResponse.json({ received: true });
   }
   const session = event.data.object as Stripe.Checkout.Session;
-  const paymentIntentId = typeof session.payment_intent === "string" ? session.payment_intent : session.payment_intent?.id;
-  const bidId = session.metadata?.bidId;
+  const providerId = typeof session.payment_intent === "string" ? session.payment_intent : session.payment_intent?.id;
+  const paymentId = session.metadata?.paymentId;
   if (session.payment_status !== "paid") return NextResponse.json({ received: true });
-  if (!bidId || !paymentIntentId || session.currency !== "usd") {
+  if (!paymentId || !providerId || session.currency !== "usd" || session.amount_total == null) {
     return new NextResponse("Invalid payment details.", { status: 400 });
   }
 
   try {
-    await db.$transaction(async (tx) => {
-      const bid = await tx.bid.findUnique({ where: { id: bidId } });
-      if (!bid || bid.amountCents !== session.amount_total) throw new Error("Payment does not match bid.");
-      const updated = await tx.bid.updateMany({
-        where: { id: bid.id, status: "pending" },
-        data: { status: "confirmed", stripePaymentIntentId: paymentIntentId },
-      });
-      if (updated.count === 1) {
-        await tx.entry.update({
-          where: { id: bid.entryId },
-          data: { totalPaidCents: { increment: bid.amountCents } },
-        });
-      } else {
-        const confirmed = await tx.bid.findUnique({ where: { id: bid.id } });
-        if (confirmed?.stripePaymentIntentId !== paymentIntentId) {
-          throw new Error("Bid was confirmed with another payment.");
-        }
-      }
-    });
+    await confirmPayment(paymentId, providerId, session.amount_total);
     return NextResponse.json({ received: true });
   } catch (error) {
     console.error("Could not confirm payment", error);
